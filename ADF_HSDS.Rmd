@@ -17,7 +17,7 @@ knitr::opts_chunk$set()
 ### But first
 
 + All the source code for this demo is available _inside this presentation_.
-+ Source code (in non-presentation form) will be made available.
++ R markdown available at http://github.com/CreRecombinase/sidechain
 + I'll be working with the example file `readExample.adf` from the `adf-primer-java` gitlab repository.
 
 
@@ -34,6 +34,22 @@ library(glue)
 userid <- "nwknoblauch" #I'll be using my HDF Kita user ID 
 ```
 
+
+## HSDS -- HDF5 optimized for the cloud
+
++ Storage using AWS S3
++ Built in redundancy
++ Cost effective
++ Scalable throughput
++ Runs as a cluster of Docker containers
++ Elastically scale compute with usage
++ Feature compatible with HDF5 library
++ Implemented in Python using asyncio
++ Task oriented parallelism 
+
+## HSDS Architecture 
+
+![](architecture.jpg){ width=80% }
 
 ## Three parts of an ADF file, three features of HSDS
 
@@ -58,7 +74,7 @@ listDatasets(adf_file) %>% head()
 
 ## Data Package
 
-Data Package contents are a breeze to work with using HSDS.  With  ~50 lines of R, one can have a file server serving the contents of the `data-package` group. Each `data-package` dataset is read as a byte array into memory which is then made available for download.
+Data Package contents are a breeze to work with using HSDS.  With  ~50 lines of R, one can have a file server serving the contents of the `data-package` group. Each `data-package` dataset is read as a byte array into memory which is then made available for download. 
 
 ```{r file_server,echo=T,message=F,warning=F}
 dataset_paths <- listDatasets(adf_file) #Get the datasets in the file
@@ -80,7 +96,7 @@ server <- function(input, output) {
     mid <- dataset_ids[input$dataset]
     ht_res <- httr::GET(url,
                         path=glue::glue("/datasets/{mid}/value"),
-                        query=list(domain=file_path))
+                        query=list(domain=file_path)) #Drop down to the REST API to read raw data
     httr::stop_for_status(ht_res)
     httr::content(ht_res,simplifyVector=T)
   })
@@ -107,7 +123,7 @@ shinyApp(
 
 + HDF5 was designed first and foremost for working with large, multidimensional array data ("Data Cubes"). `one_d_cube_m` and `one_d_cube_s`, and `two_d_cube_m` are handles to the `measure` and `scale` Data Cubes. 
 + Many of the languages/libraries commonly used in scientific settings (`MATLAB`, `R`, `python`) have special syntax for working with (e.g slicing) multidimensional array data + (High-level) HDF5 bindings to those languages often share that syntax.  
-+ Retrieving subsets of the data from HSDS works (more or less) exactly as how it would be done if the data were 
++ Retrieving subsets of the data from HSDS works (more or less) exactly as how it would be done if the data were on disk
 
 ```{r datasets,echo=T}
 #Simply pass in the path
@@ -249,9 +265,6 @@ server <- function(input, output) {
 }
 shinyApp(ui = ui, server = server)
 ```
-
-
-
 
 ## Data-description
 
