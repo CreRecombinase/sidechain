@@ -1,0 +1,375 @@
+---
+title: "Allotrope, HSDS and Shiny"
+author: "Nicholas Knoblauch\nHDF Group"
+output: slidy_presentation
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(reticulate)
+use_condaenv("ADF")
+knitr::opts_chunk$set()
+ #To run the python, you'll need `rdflib`, `numpy` and `h5pyd`
+```
+
+## Lots of exciting material to cover
+
+### But first
+
++ All the source code for this demo is available _inside this presentation_.
++ Source code (in non-presentation form) will be made available.
++ I'll be working with the example file `readExample.adf` from the `adf-primer-java` gitlab repository.
+
+
+```{r libs}
+library(shiny)
+library(rhdf5client)
+library(tidyverse)
+library(fs)
+library(httr)
+library(plotly)
+require(visNetwork)
+library(magrittr)
+library(glue)
+userid <- "nwknoblauch" #I'll be using my HDF Kita user ID 
+```
+
+
+## Three parts of an ADF file, three features of HSDS
+
+1) Data Package: reading whole datasets (`file server`)
+2) Data Cube: slicing/downsampling multidimensional data (`plotly`)
+3) Data Description: Reading data using dynamic queries (`visNetwork`)
+
+## `rhdf5client`
+
+`rhdf5client` is an R package (currently under development) for working with HDF5 data stored on HSDS. Under the hood it relies on the `HSDS` REST API.
+
+```{r rhdf5client,echo=T,message=F,warning=F}
+# Specify the source of the dataset
+url<-"http://hsdshdflab.hdfgroup.org"
+src <- HSDSSource(url)
+file_path <- glue::glue("/home/{userid}/readExample.adf") #copied from `allotrope-open-source/adf-primer-java`
+# The path to the file is then specified just like a Unix path
+adf_file <- HSDSFile(src, file_path)
+#Get a list of the datasets in the file, and take the first 6 elements (the default for `head`)
+listDatasets(adf_file) %>% head()
+```
+
+## Data Package
+
+Data Package contents are a breeze to work with using HSDS.  With  ~50 lines of R, one can have a file server serving the contents of the `data-package` group. Each `data-package` dataset is read as a byte array into memory which is then made available for download.
+
+```{r file_server,echo=T,message=F,warning=F}
+dataset_paths <- listDatasets(adf_file) #Get the datasets in the file
+dataset_ids <- dataset_paths[str_detect(dataset_paths,"/data-package/")] %>% #Get the datasets from the data-package group
+  set_names(path_file(.)) %>%
+  map_chr(~HSDSDataset(adf_file,.x)@uuid)
+
+ui <- fluidPage(
+  verticalLayout(
+      selectInput(inputId = "dataset", "Choose a File:",
+                  choices = names(dataset_ids)),
+      downloadButton("downloadData", "Download")
+  )
+)
+server <- function(input, output) {
+
+  # Reactive value for selected dataset ----
+  datasetInput <- reactive({
+    mid <- dataset_ids[input$dataset]
+    ht_res <- httr::GET(url,
+                        path=glue::glue("/datasets/{mid}/value"),
+                        query=list(domain=file_path))
+    httr::stop_for_status(ht_res)
+    httr::content(ht_res,simplifyVector=T)
+  })
+  
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      input$dataset
+    },
+    content = function(file) {
+      writeBin(as.raw(datasetInput()$value), file)
+    }
+  )
+}
+
+
+shinyApp(
+  ui = ui,
+  server = server
+)
+```
+
+
+## Data Cubes
+
++ HDF5 was designed first and foremost for working with large, multidimensional array data ("Data Cubes"). `one_d_cube_m` and `one_d_cube_s`, and `two_d_cube_m` are handles to the `measure` and `scale` Data Cubes. 
++ Many of the languages/libraries commonly used in scientific settings (`MATLAB`, `R`, `python`) have special syntax for working with (e.g slicing) multidimensional array data + (High-level) HDF5 bindings to those languages often share that syntax.  
++ Retrieving subsets of the data from HSDS works (more or less) exactly as how it would be done if the data were 
+
+```{r datasets,echo=T}
+#Simply pass in the path
+
+one_d_cube_m <- HSDSDataset(adf_file,"/data-cubes/example.allotrope.org-FluentLCDataCube/measures/96fd2794-789d-4fec-bbac-b20983568bac")
+one_d_cube_s <- HSDSDataset(adf_file,"/data-cubes/example.allotrope.org-FluentLCDataCube/scales/3fe4432f-c3aa-41c6-b37d-acb41d0006dd")
+two_d_cube_m <- HSDSDataset(adf_file,"/data-cubes/example.allotrope.org-FluentUVDataCube/measures/9cd0748d-38f6-48c0-9306-812b2d4fa505")
+
+one_d_cube_m@shape == one_d_cube_s@shape
+one_d_cube_m[1:5]
+```
+
+## Combining HSDS with Shiny
+
+Shiny is a tool for making interactive data graphics in R.  By 'slicing' data before it is read in to `R`, end users can work with arbitrarily large data efficiently.
+
+```{r slice_1,echo=T}
+ui <- fluidPage(
+    # Application title
+    titlePanel("1D example"),
+    # Sidebar with a slider input for number of bins 
+    sidebarLayout(
+        sidebarPanel(
+            sliderInput("trange", "Time ponts (index):",
+                        min = 1, max = one_d_cube_s@shape,
+                        value = c(1,one_d_cube_s@shape))
+        ),
+        # Show a plot of the generated distribution
+        mainPanel(
+            plotlyOutput("plot")
+        )
+    )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output) {
+    output$plot <- renderPlotly({
+        trange <- input$trange[1]:input$trange[2]
+        meas_d <- one_d_cube_m[trange]
+        wl_d <- one_d_cube_s[trange]
+        tibble(time=wl_d,intensity=meas_d) %>%
+            plot_ly( x = ~time, y = ~intensity) %>% 
+            layout(title = 'UVDataCube')
+    })
+}
+
+shinyApp(
+  ui = ui,
+  server = server
+)
+```
+
+## Downsampling
+
+Looking at every other data point (or every $n$-th) is another common strategy for handling large datasets. In addition to taking slices of the data, one can also take a strided/downsampled view.
+
+```{r downsample,echo=T}
+ui <- fluidPage(
+    
+    # Application title
+    titlePanel("1D example"),
+    # Sidebar with a slider input for number of bins 
+    sidebarLayout(
+        sidebarPanel(
+            selectInput(inputId = "stride",label =  "Unit stride (index):",
+                        choices=as.integer(1:10),selected = 1L,multiple = F)
+        ),
+        # Show a plot of the generated distribution
+        mainPanel(
+            plotlyOutput("plot")
+        )
+    )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output) {
+    output$plot <- renderPlotly({
+        trange <- seq(1,one_d_cube_s@shape,by=as.integer(input$stride))
+        meas_d <- one_d_cube_m[trange]
+        wl_d <- one_d_cube_s[trange]
+        tibble(time=wl_d,intensity=meas_d) %>%
+            plot_ly( x = ~time, y = ~intensity) %>% 
+            layout(title = 'UVDataCube')
+    })
+}
+
+shinyApp(
+  ui = ui,
+  server = server
+)
+
+```
+
+## Slicing along multiple dimensions
+
+A dataset in HDF5 (and in HSDS) can be sliced along any of its dimensions.
+
+```{r slice_2}
+
+# Define UI for application that draws a histogram
+ui <- fluidPage(
+  
+  # Application title
+  titlePanel("ReadExample.adf"),
+  
+  # Sidebar with a slider input for number of bins 
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("wrange", "Wavelength:",
+                  min = 190, max = 399,
+                  value = c(190,399)),
+      sliderInput("trange", "Time:",
+                  min = 1, max = 1024,
+                  value = c(1,1024))
+    ),
+    # Show a plot of the generated distribution
+    mainPanel(
+      plotlyOutput("plot")
+    )
+  )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output) {
+  output$plot <- renderPlotly({
+
+    trange <- input$trange[1]:input$trange[2]
+    wrange <- (input$wrange[1]:input$wrange[2])-189L
+    intensity <- two_d_cube_m[trange,wrange]
+    plot_ly(z = ~intensity) %>% 
+      add_surface()%>% 
+      layout(title = 'UVDataCube',
+             scene = list(
+               xaxis = list(title = "wavelength"),
+               yaxis = list(title = "time"),
+               zaxis = list(title = "intensity")
+             ))
+  })
+}
+shinyApp(ui = ui, server = server)
+```
+
+
+
+
+## Data-description
+
+Accessing the `RDF` data stored in the `data-description` group is not straightforward. What I've done instead as a demonstration of HSDS functionality is used the `ADF` API to dump the `data-description` to a `.ttl` file, and stored the data as a one-dimensional array where each element in the array has three strings corresponding to `subject`, `predicate`, `object`
+
+```{python,eval=F,echo=TRUE}
+from rdflib import Graph
+import h5pyd 
+import numpy as np
+g = Graph()
+g.parse("ADFReadExample.ttl", format="turtle")
+n_elem=len(g)
+
+fg=[(str(subj),str(pred),str(obj)) for subj,pred,obj in g]
+
+data= [x for x in zip(*fg)]
+
+f = h5pyd.File("hdf5://home/nwknoblauch/ADF_Ontology.h5", 'w')
+my_datatype = np.dtype([('subject', np.dtype("S100")),('predicate', np.dtype("S100")),('object', np.dtype("S100"))])
+data_array=np.array(fg,dtype=my_datatype)
+
+dataset = f.create_dataset("data-description",(n_elem,),dtype=my_datatype)
+dataset[...] = data_array
+f.close()
+```
+
+
+## Making data readable
+
+The following command can be issue from the command line to make a file readable.
+
+```{bash,echo=TRUE,eval=FALSE}
+hsacl /home/nwknoblauch/ADF_Ontology.h5 +r default
+```
+## Querying data
+
+Subsets of the data can also be obtained based on a condition expression.  This can be useful in exploring record-like data.
+
+```{r onto_adf}
+
+responseFactory <- function(url,domain){
+  retf <- function(url,path=NULL,domain,other_q=NULL){
+    ret <- httr::GET(url,path=path,query=c(list(domain=domain),other_q))
+    httr::stop_for_status(ret)
+    httr::content(ret,simplifyVector=T)
+  }
+  return(purrr::partial(retf,url=url,domain=domain))
+}
+
+query_fn <- function(resp_f,id,query_str){
+  resp_f(glue("datasets/{id}/value"),other_q=list(query=query_str))$value %>% as_tibble() %>% set_colnames(c("subject","predicate","object"))
+}
+
+path <- glue::glue("/home/{userid}/ADF_Ontology.h5")
+src <- HSDSSource(url)
+adf_file <- HSDSFile(src, path)
+resp_f <- responseFactory(url,path)
+root <-resp_f(glue("/"))$root
+ct <- HSDSDataset(adf_file,"/data-description")@uuid
+
+node_edge <- function(df = tibble(subject=character(),predicate=character(),object=character())){
+  if(nrow(df)==0){
+    return(list(nodes=tibble(id=integer(),label=character()),
+                edges=tibble(from=integer(),to=integer())))
+  }
+  u_nodes <- unique(c(df$subject,df$object))
+  nodes <- tibble(id=1:length(u_nodes),label=u_nodes)
+  rn <- set_names(1:length(u_nodes),u_nodes)
+  edges <- tibble(from=rn[df$subject],to=rn[df$object],label=df$predicate)
+  return(list(nodes=nodes,edges=edges))
+}
+
+ui <- shiny::navbarPage(
+  title = "Querying Ontologies",
+  # Application title
+  # Sidebar with a slider input for number of bins 
+  sidebarLayout(
+    sidebarPanel(
+      textAreaInput(inputId = "query",label =  "Query",value = " (object==b'1D')|(subject==b'http://example.allotrope.org/LCDataCube')|(predicate==b'http://purl.org/dc/terms/title')"),
+      actionButton("submit",label = "Submit Query")
+    ),
+    # Show a plot of the generated distribution
+    mainPanel(
+      # tableOutput("table_hello")
+      visNetworkOutput("network"),
+      tableOutput("table")
+    )
+  )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output,session) {
+  
+  network_fun <- eventReactive(input$submit,{
+    query_fn(resp_f=resp_f,
+             id=ct,query_str = input$query)
+  })
+  
+  output$network <-  
+    renderVisNetwork({
+      type_df <- network_fun()
+      retl <-     node_edge(type_df)
+      visNetwork(retl$nodes, retl$edges)
+  })
+  output$table <- renderTable({
+          network_fun()
+  })
+  
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+```
+
+## Try it out for yourself!
+
+
++ HDF5 is a format designed for use by practitioners as well as programmers
++ HSDS + Shiny empowers SME to build, share and deploy custom analytics and visualization tools
++ For access to the HSDS platform check out `https://www.hdfgroup.org/hdfkitalab/`
+
