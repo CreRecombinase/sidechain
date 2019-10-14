@@ -385,4 +385,5 @@ shinyApp(ui = ui, server = server)
 + HDF5 is a format designed for use by practitioners as well as programmers
 + HSDS + Shiny empowers SME to build, share and deploy custom analytics and visualization tools
 + For access to the HSDS platform check out `https://www.hdfgroup.org/hdfkitalab/`
++ Source code available at `https://www.github.com/CreRecombinase/sidechain`
 
