@@ -125,7 +125,7 @@ You can interact with the benchmark data using [snakeviz](https://jiffyclub.gith
 snakeviz profiles/refactor.stat
 ```
 
-And you'll end up with a webpage that looks like this : ![refactor](profile/Refactor.png)
+And you'll end up with a webpage that looks like this : ![refactor](profiles/Refactor.png)
 
 
 Kita
